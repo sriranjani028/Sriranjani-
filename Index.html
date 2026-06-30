@@ -1,0 +1,341 @@
+import React, { useState, useMemo } from "react";
+import {
+  Plus, Trash2, Edit2, Sun, Moon, Calendar as CalIcon, MessageCircle,
+  CheckCircle2, Circle, AlertTriangle, Sparkles, X, BarChart3, Clock, LogOut, Search,
+} from "lucide-react";
+
+// ---------- Design tokens ----------
+// Palette: ink (#11131A) / paper (#FAF9F6) / signal-violet (#6C5CE7) /
+// urgent-coral (#FF6B5E) / mid-amber (#F2A93B) / calm-teal (#2EC4B6)
+// Type: "Source Serif 4" for display (headings, greeting), Inter for UI, JetBrains Mono for data/dates
+const FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');";
+const FONT_BODY = "'Inter', system-ui, sans-serif";
+const FONT_DISPLAY = "'Source Serif 4', Georgia, serif";
+const FONT_MONO = "'JetBrains Mono', monospace";
+
+const PRIORITY = {
+  high: { label: "High", color: "#FF6B5E", bg: "#FFF1EF", dbg: "#3A1E1C" },
+  medium: { label: "Medium", color: "#F2A93B", bg: "#FFF7E8", dbg: "#3A2E12" },
+  low: { label: "Low", color: "#2EC4B6", bg: "#EAFBF9", dbg: "#0F2E2A" },
+};
+
+const CATEGORIES = ["Work", "Personal", "Health", "Study", "Finance"];
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const addDays = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+const seedTasks = [
+  { id: 1, title: "Submit Q3 client proposal", description: "Finalize budget section and send to client", category: "Work", due: todayISO(), priority: "high", done: false },
+  { id: 2, title: "Doctor appointment", description: "Annual checkup, bring insurance card", category: "Health", due: todayISO(), priority: "medium", done: false },
+  { id: 3, title: "Pay electricity bill", description: "Due before late fee kicks in", category: "Finance", due: addDays(-1), priority: "high", done: false },
+  { id: 4, title: "Read 'Atomic Habits' ch.4", description: "20 min reading session", category: "Personal", due: addDays(1), priority: "low", done: false },
+  { id: 5, title: "Team standup notes", description: "Summarize sprint blockers", category: "Work", due: addDays(2), priority: "medium", done: true },
+  { id: 6, title: "Renew gym membership", description: "", category: "Health", due: addDays(5), priority: "low", done: false },
+  { id: 7, title: "Study for SQL certification", description: "Practice joins & window functions", category: "Study", due: addDays(3), priority: "high", done: false },
+];
+
+function daysUntil(due) {
+  const ms = new Date(due) - new Date(todayISO());
+  return Math.round(ms / 86400000);
+}
+
+// AI-style urgency score: overdue > due today > priority weight > soonness
+function urgencyScore(t) {
+  const d = daysUntil(t.due);
+  const pw = { high: 3, medium: 2, low: 1 }[t.priority];
+  let score = pw * 10;
+  if (d < 0) score += 100 + Math.abs(d) * 5;
+  else if (d === 0) score += 60;
+  else score += Math.max(0, 20 - d * 3);
+  return score;
+}
+
+function dueLabel(due) {
+  const d = daysUntil(due);
+  if (d < 0) return { text: `${Math.abs(d)}d overdue`, kind: "overdue" };
+  if (d === 0) return { text: "Due today", kind: "today" };
+  if (d === 1) return { text: "Due tomorrow", kind: "soon" };
+  return { text: `Due in ${d}d`, kind: "later" };
+}
+
+function nextAction(tasks) {
+  const pending = tasks.filter((t) => !t.done);
+  if (!pending.length) return "Everything's clear — nice work. Maybe plan tomorrow?";
+  const sorted = [...pending].sort((a, b) => urgencyScore(b) - urgencyScore(a));
+  const top = sorted[0];
+  const dl = dueLabel(top.due);
+  if (dl.kind === "overdue") return `Start with "${top.title}" — it's ${dl.text}. Clear this first to stop the slide.`;
+  if (dl.kind === "today") return `"${top.title}" is due today and marked ${top.priority} priority. That's your move right now.`;
+  return `Next up: "${top.title}" (${top.priority} priority, ${dl.text.toLowerCase()}). Knock it out while you have momentum.`;
+}
+
+const emptyForm = { title: "", description: "", category: "Work", due: todayISO(), priority: "medium" };
+
+export default function LifeSyncAI() {
+  const [dark, setDark] = useState(true);
+  const [tasks, setTasks] = useState(seedTasks);
+  const [view, setView] = useState("dashboard"); // dashboard | calendar | assistant
+  const [filterCat, setFilterCat] = useState("All");
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [chat, setChat] = useState([
+    { from: "ai", text: "Hi, I'm your LifeSync assistant. Ask me \"what should I do now?\" any time." },
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [authed, setAuthed] = useState(false);
+  const [userName, setUserName] = useState("");
+
+  const theme = dark
+    ? { bg: "#0F1117", panel: "#171A23", panel2: "#1D212C", text: "#F2F1ED", sub: "#9AA0AE", border: "#272B36" }
+    : { bg: "#FAF9F6", panel: "#FFFFFF", panel2: "#F3F2EE", text: "#14171F", sub: "#6B7280", border: "#E8E6DF" };
+  const accent = "#6C5CE7";
+
+  const filtered = useMemo(
+    () => (filterCat === "All" ? tasks : tasks.filter((t) => t.category === filterCat)),
+    [tasks, filterCat]
+  );
+
+  const sortedByUrgency = useMemo(
+    () => [...filtered].sort((a, b) => urgencyScore(b) - urgencyScore(a)),
+    [filtered]
+  );
+
+  const todaysImportant = useMemo(
+    () =>
+      tasks
+        .filter((t) => !t.done && (t.due <= todayISO() || t.priority === "high"))
+        .sort((a, b) => urgencyScore(b) - urgencyScore(a))
+        .slice(0, 4),
+    [tasks]
+  );
+
+  const stats = useMemo(() => {
+    const completed = tasks.filter((t) => t.done).length;
+    const pending = tasks.length - completed;
+    const overdue = tasks.filter((t) => !t.done && daysUntil(t.due) < 0).length;
+    const score = tasks.length ? Math.round((completed / tasks.length) * 100) : 0;
+    return { completed, pending, overdue, score, total: tasks.length };
+  }, [tasks]);
+
+  function openNew() {
+    setForm(emptyForm);
+    setEditingId(null);
+    setShowForm(true);
+  }
+  function openEdit(t) {
+    setForm({ title: t.title, description: t.description, category: t.category, due: t.due, priority: t.priority });
+    setEditingId(t.id);
+    setShowForm(true);
+  }
+  function saveTask() {
+    if (!form.title.trim()) return;
+    if (editingId) {
+      setTasks((ts) => ts.map((t) => (t.id === editingId ? { ...t, ...form } : t)));
+    } else {
+      setTasks((ts) => [...ts, { id: Date.now(), done: false, ...form }]);
+    }
+    setShowForm(false);
+  }
+  function removeTask(id) {
+    setTasks((ts) => ts.filter((t) => t.id !== id));
+  }
+  function toggleDone(id) {
+    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+  }
+
+  function sendChat() {
+    const q = chatInput.trim();
+    if (!q) return;
+    setChat((c) => [...c, { from: "user", text: q }]);
+    setChatInput("");
+    setTimeout(() => {
+      let reply;
+      const lower = q.toLowerCase();
+      if (lower.includes("what should i do") || lower.includes("next")) {
+        reply = nextAction(tasks);
+      } else if (lower.includes("overdue")) {
+        const od = tasks.filter((t) => !t.done && daysUntil(t.due) < 0);
+        reply = od.length
+          ? `You have ${od.length} overdue task${od.length > 1 ? "s" : ""}: ${od.map((t) => t.title).join(", ")}.`
+          : "Nothing overdue — you're on track.";
+      } else if (lower.includes("today")) {
+        reply = todaysImportant.length
+          ? `Today's focus: ${todaysImportant.map((t) => t.title).join(", ")}.`
+          : "Nothing urgent for today. Good day to get ahead.";
+      } else {
+        reply = nextAction(tasks);
+      }
+      setChat((c) => [...c, { from: "ai", text: reply }]);
+    }, 400);
+  }
+
+  // ---------- Auth gate ----------
+  if (!authed) {
+    return (
+      <div style={{ background: dark ? "#0B0C10" : "#FAF9F6", minHeight: "100vh", fontFamily: FONT_BODY, display: "flex" }}>
+        <style>{FONT_IMPORT}</style>
+        {/* Left panel — brand / value prop */}
+        <div style={{ flex: 1, background: dark ? "linear-gradient(160deg,#171225,#0B0C10)" : "linear-gradient(160deg,#EFEBFF,#FAF9F6)", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "44px 48px" }} className="hide-mobile">
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 30, height: 30, borderRadius: 8, background: accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Sparkles size={16} color="#fff" />
+            </div>
+            <span style={{ fontWeight: 700, fontSize: 15, color: dark ? "#F2F1ED" : "#14171F" }}>LifeSync AI</span>
+          </div>
+          <div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", color: accent, marginBottom: 14 }}>Productivity, prioritized</div>
+            <h1 style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 38, lineHeight: 1.15, color: dark ? "#F2F1ED" : "#14171F", margin: 0, maxWidth: 420 }}>
+              Know exactly what deserves your attention next.
+            </h1>
+            <p style={{ color: dark ? "#9AA0AE" : "#6B7280", fontSize: 14.5, marginTop: 16, maxWidth: 380, lineHeight: 1.6 }}>
+              LifeSync ranks your tasks by real urgency, not just due date — so the right thing always rises to the top.
+            </p>
+          </div>
+          <div style={{ fontSize: 11.5, color: dark ? "#5A6072" : "#9AA0AE" }}>© {new Date().getFullYear()} LifeSync AI</div>
+        </div>
+
+        {/* Right panel — auth */}
+        <div style={{ width: 420, maxWidth: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div style={{ width: "100%", maxWidth: 320 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 28 }} className="show-mobile-only">
+              <div style={{ width: 30, height: 30, borderRadius: 8, background: accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Sparkles size={16} color="#fff" />
+              </div>
+              <span style={{ fontWeight: 700, fontSize: 16, color: theme.text }}>LifeSync AI</span>
+            </div>
+            <h2 style={{ fontFamily: FONT_DISPLAY, fontSize: 24, fontWeight: 600, color: theme.text, margin: "0 0 6px" }}>Welcome back</h2>
+            <p style={{ color: theme.sub, fontSize: 13.5, marginBottom: 26, lineHeight: 1.5 }}>Sign in to sync your tasks, deadlines and reminders.</p>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: theme.sub, display: "block", marginBottom: 6 }}>Email</label>
+            <input
+              placeholder="you@example.com"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 10, border: `1px solid ${theme.border}`, background: theme.panel2, color: theme.text, marginBottom: 14, fontSize: 14, fontFamily: FONT_BODY }}
+            />
+            <button
+              onClick={() => setAuthed(true)}
+              style={{ width: "100%", padding: "11px 12px", borderRadius: 10, border: "none", background: accent, color: "#fff", fontWeight: 600, marginBottom: 12, cursor: "pointer", fontSize: 13.5, boxShadow: "0 1px 2px rgba(108,92,231,0.25)" }}
+            >
+              Continue with email
+            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0", color: theme.sub, fontSize: 11 }}>
+              <div style={{ flex: 1, height: 1, background: theme.border }} /> OR <div style={{ flex: 1, height: 1, background: theme.border }} />
+            </div>
+            <button
+              onClick={() => { setUserName("Demo User"); setAuthed(true); }}
+              style={{ width: "100%", padding: "11px 12px", borderRadius: 10, border: `1px solid ${theme.border}`, background: "transparent", color: theme.text, fontWeight: 600, cursor: "pointer", fontSize: 13.5, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+            >
+              <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l5.7-5.7C34.6 6.1 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.6 16 18.9 13 24 13c3.1 0 5.8 1.1 8 3l5.7-5.7C34.6 6.1 29.6 4 24 4c-7.4 0-13.8 4.2-17.1 10.4z"/><path fill="#4CAF50" d="M24 44c5.5 0 10.4-1.9 14.2-5.1l-6.6-5.4C29.6 35.4 26.9 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.6 5.1C9.9 39.6 16.4 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.3 5.5l6.6 5.4C40.9 36.6 44 31 44 24c0-1.3-.1-2.7-.4-3.5z"/></svg>
+              Continue with Google
+            </button>
+            <p style={{ fontSize: 11, color: theme.sub, marginTop: 20, textAlign: "center" }}>Demo mode — no real account is created.</p>
+          </div>
+        </div>
+        <style>{`@media (max-width:680px){.hide-mobile{display:none}} @media (min-width:681px){.show-mobile-only{display:none}}`}</style>
+      </div>
+    );
+  }
+
+  // ---------- Shared bits ----------
+  const NavBtn = ({ id, label, icon: Icon }) => (
+    <button
+      onClick={() => setView(id)}
+      style={{
+        display: "flex", alignItems: "center", gap: 9, padding: "9px 14px", borderRadius: 10,
+        border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: 600, width: "100%", textAlign: "left",
+        background: view === id ? (dark ? "#272135" : "#EFEBFF") : "transparent",
+        color: view === id ? accent : theme.sub,
+      }}
+    >
+      <Icon size={16} /> {label}
+    </button>
+  );
+
+  const TaskCard = ({ t }) => {
+    const p = PRIORITY[t.priority];
+    const dl = dueLabel(t.due);
+    return (
+      <div
+        style={{
+          background: theme.panel, border: `1px solid ${theme.border}`, borderLeft: `4px solid ${p.color}`,
+          borderRadius: 12, padding: 14, marginBottom: 10, opacity: t.done ? 0.55 : 1,
+          boxShadow: dark ? "none" : "0 1px 2px rgba(20,23,31,0.04)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", gap: 10, flex: 1 }}>
+            <button onClick={() => toggleDone(t.id)} style={{ background: "none", border: "none", cursor: "pointer", color: t.done ? "#2EC4B6" : theme.sub, marginTop: 1 }}>
+              {t.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
+            </button>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14.5, textDecoration: t.done ? "line-through" : "none" }}>{t.title}</div>
+              {t.description && <div style={{ fontSize: 12.5, color: theme.sub, marginTop: 2 }}>{t.description}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: p.bg, color: dark ? p.color : "#7A3A33", fontWeight: 600 }}>
+                  {p.label}
+                </span>
+                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: theme.panel2, color: theme.sub }}>{t.category}</span>
+                <span style={{ fontSize: 10.5, fontFamily: FONT_MONO, padding: "2px 8px", borderRadius: 999, display: "flex", alignItems: "center", gap: 4, background: dl.kind === "overdue" ? "#FF6B5E22" : theme.panel2, color: dl.kind === "overdue" ? "#FF6B5E" : theme.sub }}>
+                  {dl.kind === "overdue" ? <AlertTriangle size={11} /> : <Clock size={11} />} {dl.text}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 4, height: 'fit-content' }}>
+            <button onClick={() => openEdit(t)} style={{ background: "none", border: "none", color: theme.sub, cursor: "pointer", padding: 4 }}><Edit2 size={15} /></button>
+            <button onClick={() => removeTask(t.id)} style={{ background: "none", border: "none", color: theme.sub, cursor: "pointer", padding: 4 }}><Trash2 size={15} /></button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ background: theme.bg, color: theme.text, minHeight: "100vh", fontFamily: FONT_BODY, display: "flex", overflowX: "hidden" }}>
+      <style>{`${FONT_IMPORT} *{box-sizing:border-box;} body{margin:0;}`}</style>
+      {/* Sidebar */}
+      <div style={{ width: 208, borderRight: `1px solid ${theme.border}`, padding: "20px 16px", display: "flex", flexDirection: "column", flexShrink: 0 }} className="hide-mobile">
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 30, padding: "0 4px" }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Sparkles size={15} color="#fff" />
+          </div>
+          <span style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 17, letterSpacing: -0.2 }}>LifeSync</span>
+        </div>
+        <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: theme.sub, padding: "0 10px", marginBottom: 8 }}>Menu</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <NavBtn id="dashboard" label="Dashboard" icon={BarChart3} />
+          <NavBtn id="calendar" label="Calendar" icon={CalIcon} />
+          <NavBtn id="assistant" label="AI Assistant" icon={MessageCircle} />
+        </div>
+        <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+          <button onClick={() => setDark((d) => !d)} style={{ display: "flex", alignItems: "center", gap: 8, background: theme.panel2, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "8px 10px", cursor: "pointer", color: theme.text, fontSize: 12.5 }}>
+            {dark ? <Sun size={14} /> : <Moon size={14} />} {dark ? "Light mode" : "Dark mode"}
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: `1px solid ${theme.border}`, borderRadius: 10 }}>
+            <div style={{ width: 24, height: 24, borderRadius: "50%", background: accent, color: "#fff", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              {(userName || "U")[0].toUpperCase()}
+            </div>
+            <div style={{ fontSize: 11.5, color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{userName || "you@example.com"}</div>
+            <button onClick={() => setAuthed(false)} style={{ background: "none", border: "none", color: theme.sub, cursor: "pointer", display: "flex" }}><LogOut size={13} /></button>
+          </div>
+        </div>
+      </div>
+
+      {/* Mobile bottom nav */}
+      <div className="show-mobile-only" style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: theme.panel, borderTop: `1px solid ${theme.border}`, display: "flex", justifyContent: "space-around", padding: "8px 0", zIndex: 40 }}>
+        {[
+          { id: "dashboard", icon: BarChart3, label: "Home" },
+          { id: "calendar", icon: CalIcon, label: "Calendar" },
+          { id: "assistant", icon: MessageCircle, label: "Assistant" },
+        ].map((n) => (
+          <button key={n.id} onClick={() => setView(n.id)} style={{ background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, color: view === n.id ? accent : theme.sub, cursor: "pointer", fontSize: 10, fontWeight: 600 }}>
+            <n.icon size={18} /> {n.label}
+          </button>
+        ))}
+      </div>
+      <style>{`@media (max-width:680px){.hide-mobile{display:none !i
